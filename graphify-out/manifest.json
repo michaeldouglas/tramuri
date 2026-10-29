@@ -1,0 +1,98 @@
+{
+  "Cargo.toml": {
+    "mtime": 1793237238.885634,
+    "seen": 1793237776.937768,
+    "ast_hash": "e5688f3f95d0b3946615cc8e1c3c4026",
+    "semantic_hash": ""
+  },
+  "bindings/python/Cargo.toml": {
+    "mtime": 1793237213.5105755,
+    "seen": 1793237776.9377775,
+    "ast_hash": "b9a06a63b14a9e9a79be3d8a27ba23e6",
+    "semantic_hash": ""
+  },
+  "bindings/python/src/lib.rs": {
+    "mtime": 1793237213.5105755,
+    "seen": 1793237776.9377813,
+    "ast_hash": "ab0e4ecc29c6df8bedd2425c079ed4b1",
+    "semantic_hash": ""
+  },
+  "crates/tramuri-cli/Cargo.toml": {
+    "mtime": 1793237518.4020102,
+    "seen": 1793237776.9377832,
+    "ast_hash": "20a31dc29ec4497201b44bda6686ac07",
+    "semantic_hash": ""
+  },
+  "crates/tramuri-cli/src/main.rs": {
+    "mtime": 1793237753.787779,
+    "seen": 1793237776.937785,
+    "ast_hash": "8e101a1ffd0d8a840c216ed8de6977e3",
+    "semantic_hash": ""
+  },
+  "crates/tramuri-cli/tests/commands.rs": {
+    "mtime": 1793237518.4020102,
+    "seen": 1793237776.937786,
+    "ast_hash": "d65519a53ce0d3e4398a27a25310364c",
+    "semantic_hash": ""
+  },
+  "crates/tramuri-core/Cargo.toml": {
+    "mtime": 1793237081.1428275,
+    "seen": 1793237776.937788,
+    "ast_hash": "fd97677109a3c37a26c771cdb8fa359f",
+    "semantic_hash": ""
+  },
+  "crates/tramuri-core/src/discovery.rs": {
+    "mtime": 1793237510.5526435,
+    "seen": 1793237776.9377892,
+    "ast_hash": "c4b1022982abe1c1548987b6afccbe96",
+    "semantic_hash": ""
+  },
+  "crates/tramuri-core/src/error.rs": {
+    "mtime": 1793237271.7119207,
+    "seen": 1793237776.9377904,
+    "ast_hash": "b63524ea3a76c4d67857274456532ef7",
+    "semantic_hash": ""
+  },
+  "crates/tramuri-core/src/lib.rs": {
+    "mtime": 1793237110.7469828,
+    "seen": 1793237776.9377916,
+    "ast_hash": "e8f1a8472b253d57a6b7e172017a2243",
+    "semantic_hash": ""
+  },
+  "crates/tramuri-core/src/storage.rs": {
+    "mtime": 1793237271.7139313,
+    "seen": 1793237776.937793,
+    "ast_hash": "9c3164106ab803af8311529e1a47393d",
+    "semantic_hash": ""
+  },
+  "pyproject.toml": {
+    "mtime": 1793237344.8451824,
+    "seen": 1793237776.937795,
+    "ast_hash": "2ce7ea1c9e706eda25c7bc9db6ed65c9",
+    "semantic_hash": ""
+  },
+  "python/tramuri/__init__.py": {
+    "mtime": 1793237753.7889633,
+    "seen": 1793237776.937796,
+    "ast_hash": "22fe8e2d96e80d6b0e69478c779b90a2",
+    "semantic_hash": ""
+  },
+  "tests/python/test_sdk.py": {
+    "mtime": 1793237529.0881307,
+    "seen": 1793237776.937797,
+    "ast_hash": "893f42024fdb267a16c1bb8f92a04186",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1793237755.822645,
+    "seen": 1793237776.9377983,
+    "ast_hash": "14eec343b04c1b8a8aab4b873d86ead5",
+    "semantic_hash": ""
+  },
+  "docs/architecture/decisions/0002-project-discovery.md": {
+    "mtime": 1793237536.135322,
+    "seen": 1793237776.9377997,
+    "ast_hash": "754ea38d68f09206ae806b3b22e02a20",
+    "semantic_hash": ""
+  }
+}

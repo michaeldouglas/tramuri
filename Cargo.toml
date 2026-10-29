@@ -1,0 +1,20 @@
+[workspace]
+members = ["crates/tramuri-core", "crates/tramuri-cli", "bindings/python"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+hex = "0.4.3"
+ignore = "0.4.34"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+thiserror = "2"
+tempfile = "3"

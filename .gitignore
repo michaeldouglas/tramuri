@@ -2,6 +2,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
+tramuri-harness-kit/
 
 # C extensions
 *.so
@@ -75,6 +76,7 @@ docs/_build/
 # PyBuilder
 .pybuilder/
 target/
+.tramuri/
 
 # Jupyter Notebook
 .ipynb_checkpoints

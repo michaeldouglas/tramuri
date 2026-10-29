@@ -1,0 +1,40 @@
+[build-system]
+requires = ["maturin>=1.13,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "tramuri"
+dynamic = ["version"]
+description = "Local-first project discovery and persistent context infrastructure"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.13,<2.0",
+    "pytest>=9,<10",
+]
+
+[tool.maturin]
+manifest-path = "bindings/python/Cargo.toml"
+bindings = "pyo3"
+python-source = "python"
+module-name = "tramuri._native"
+include = [{ path = "LICENSE", format = "sdist" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = ["-ra"]
