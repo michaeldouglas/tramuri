@@ -3,6 +3,7 @@ __pycache__/
 *.py[codz]
 *$py.class
 tramuri-harness-kit/
+graphify-out/
 
 # C extensions
 *.so
@@ -77,6 +78,7 @@ docs/_build/
 .pybuilder/
 target/
 .tramuri/
+graphify-out/
 
 # Jupyter Notebook
 .ipynb_checkpoints
