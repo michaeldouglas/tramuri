@@ -2,7 +2,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
-use tramuri_core::{init, scan, TramuriError as CoreError};
+use tramuri_core::{TramuriError as CoreError, init, scan};
 
 create_exception!(_native, TramuriError, PyException);
 

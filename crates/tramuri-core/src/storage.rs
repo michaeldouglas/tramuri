@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, TransactionBehavior, params};
 
-use crate::{Result, SCHEMA_VERSION, TramuriError};
+use crate::{HashStatus, Result, SCHEMA_VERSION, TramuriError};
 
 pub(crate) const APP_DIR: &str = ".tramuri";
 pub(crate) const DATABASE_FILE: &str = "tramuri.sqlite3";
@@ -13,7 +13,7 @@ pub(crate) struct StoredFile {
     pub size_bytes: u64,
     pub modified_unix_ms: Option<i64>,
     pub sha256: Option<String>,
-    pub hash_status: String,
+    pub hash_status: HashStatus,
 }
 
 pub(crate) fn database_path(root: &Path) -> PathBuf {
@@ -110,10 +110,14 @@ pub(crate) fn initialize_database(root: &Path) -> Result<bool> {
                     |row| row.get(0),
                 )?;
                 if user_tables != 0 {
-                    return Err(TramuriError::UnsupportedSchema { found: 0, supported: SCHEMA_VERSION });
+                    return Err(TramuriError::UnsupportedSchema {
+                        found: 0,
+                        supported: SCHEMA_VERSION,
+                    });
                 }
             }
-            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             transaction.execute_batch(
                 "CREATE TABLE IF NOT EXISTS file_inventory (
                     path TEXT PRIMARY KEY NOT NULL,
@@ -127,7 +131,12 @@ pub(crate) fn initialize_database(root: &Path) -> Result<bool> {
             transaction.commit()?;
         }
         version if version == i64::from(SCHEMA_VERSION) => {}
-        found => return Err(TramuriError::UnsupportedSchema { found, supported: SCHEMA_VERSION }),
+        found => {
+            return Err(TramuriError::UnsupportedSchema {
+                found,
+                supported: SCHEMA_VERSION,
+            });
+        }
     }
 
     Ok(already_initialized)
@@ -136,7 +145,10 @@ pub(crate) fn initialize_database(root: &Path) -> Result<bool> {
 fn validate_schema(connection: &Connection) -> Result<()> {
     let found: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if found != i64::from(SCHEMA_VERSION) {
-        return Err(TramuriError::UnsupportedSchema { found, supported: SCHEMA_VERSION });
+        return Err(TramuriError::UnsupportedSchema {
+            found,
+            supported: SCHEMA_VERSION,
+        });
     }
     Ok(())
 }
@@ -148,17 +160,30 @@ pub(crate) fn load_inventory(connection: &Connection) -> Result<Vec<StoredFile>>
     )?;
     let rows = statement.query_map([], |row| {
         let size_bytes: i64 = row.get(1)?;
+        let hash_status_value: String = row.get(4)?;
+        let hash_status = HashStatus::from_storage_value(&hash_status_value).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Text,
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unknown stored hash status: {hash_status_value}"),
+                )
+                .into(),
+            )
+        })?;
         Ok(StoredFile {
             path: row.get(0)?,
             size_bytes: u64::try_from(size_bytes)
                 .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, size_bytes))?,
             modified_unix_ms: row.get(2)?,
             sha256: row.get(3)?,
-            hash_status: row.get(4)?,
+            hash_status,
         })
     })?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(TramuriError::from)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(TramuriError::from)
 }
 
 pub(crate) fn persist_scan(
@@ -172,7 +197,10 @@ pub(crate) fn persist_scan(
         transaction.execute("DELETE FROM file_inventory", [])?;
     }
 
-    for file in files.iter().filter(|file| file.hash_status != "read_error") {
+    for file in files
+        .iter()
+        .filter(|file| file.hash_status != HashStatus::ReadError)
+    {
         let size_bytes = i64::try_from(file.size_bytes)
             .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, i64::MAX))?;
         transaction.execute(
@@ -188,7 +216,7 @@ pub(crate) fn persist_scan(
                 size_bytes,
                 file.modified_unix_ms,
                 file.sha256,
-                file.hash_status,
+                file.hash_status.as_storage_value(),
             ],
         )?;
     }
@@ -203,3 +231,89 @@ pub(crate) fn persist_scan(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use super::{StoredFile, load_inventory, persist_scan};
+    use crate::{HashStatus, TramuriError};
+
+    fn inventory_database() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        connection
+            .execute_batch(
+                "CREATE TABLE file_inventory (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+                    modified_unix_ms INTEGER,
+                    sha256 TEXT,
+                    hash_status TEXT NOT NULL CHECK (hash_status IN ('hashed', 'too_large', 'read_error'))
+                ) WITHOUT ROWID;",
+            )
+            .expect("inventory table should be created");
+        connection
+    }
+
+    #[test]
+    fn persisted_hash_statuses_round_trip_without_storing_read_errors() {
+        let mut connection = inventory_database();
+        let files = [
+            StoredFile {
+                path: "hashed.txt".to_owned(),
+                size_bytes: 4,
+                modified_unix_ms: Some(1),
+                sha256: Some("abcd".to_owned()),
+                hash_status: HashStatus::Hashed,
+            },
+            StoredFile {
+                path: "large.bin".to_owned(),
+                size_bytes: 32 * 1024 * 1024 + 1,
+                modified_unix_ms: Some(2),
+                sha256: None,
+                hash_status: HashStatus::TooLarge,
+            },
+            StoredFile {
+                path: "unreadable.txt".to_owned(),
+                size_bytes: 0,
+                modified_unix_ms: None,
+                sha256: None,
+                hash_status: HashStatus::ReadError,
+            },
+        ];
+
+        persist_scan(&mut connection, &files, &[], true).expect("scan should persist");
+        let loaded = load_inventory(&connection).expect("inventory should load");
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].hash_status, HashStatus::Hashed);
+        assert_eq!(loaded[1].hash_status, HashStatus::TooLarge);
+        assert_eq!(loaded[0].path, "hashed.txt");
+        assert_eq!(loaded[1].path, "large.bin");
+    }
+
+    #[test]
+    fn unknown_database_hash_status_returns_a_conversion_error() {
+        let connection = inventory_database();
+        connection
+            .pragma_update(None, "ignore_check_constraints", true)
+            .expect("test should be able to bypass the schema check");
+        connection
+            .execute(
+                "INSERT INTO file_inventory (path, size_bytes, modified_unix_ms, sha256, hash_status)
+                 VALUES ('unknown.txt', 1, NULL, NULL, 'future_status')",
+                [],
+            )
+            .expect("invalid value should be inserted for this diagnostic test");
+
+        let error = load_inventory(&connection).expect_err("unknown status must not be accepted");
+
+        assert!(matches!(
+            error,
+            TramuriError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Text,
+                _
+            ))
+        ));
+    }
+}

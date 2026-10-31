@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest, macos-26-intel]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+
+  sdk:
+    name: Python SDK (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest, macos-26-intel]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          enable-cache: true
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --package tramuri-cli
+      - run: uv sync --locked --no-install-project --python ${{ matrix.python-version }}
+      - run: uv run --no-sync maturin develop --locked --manifest-path bindings/python/Cargo.toml
+      - name: Run Python SDK and mandatory CLI parity tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:TRAMURI_CLI = Join-Path $env:GITHUB_WORKSPACE 'target\debug\tramuri.exe'
+          uv run --locked --no-sync pytest
+      - name: Run Python SDK and mandatory CLI parity tests (Unix)
+        if: runner.os != 'Windows'
+        env:
+          TRAMURI_CLI: ${{ github.workspace }}/target/debug/tramuri
+        run: uv run --locked --no-sync pytest

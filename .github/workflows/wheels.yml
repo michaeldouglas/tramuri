@@ -1,0 +1,120 @@
+name: Wheels
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: Wheel (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest, macos-26-intel]
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          enable-cache: true
+      - uses: Swatinem/rust-cache@v2
+      - run: uv sync --locked --no-install-project --python ${{ matrix.python-version }}
+      - name: Build Linux wheel
+        if: runner.os == 'Linux'
+        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1
+        with:
+          command: build
+          args: --locked --release --manifest-path bindings/python/Cargo.toml --interpreter python${{ matrix.python-version }} --out dist
+          maturin-version: 1.15.0
+          manylinux: 2014
+      - name: Build Windows or macOS wheel
+        if: runner.os != 'Linux'
+        run: uv run --no-sync maturin build --locked --release --manifest-path bindings/python/Cargo.toml --interpreter python --out dist
+      - name: Select the built wheel and run isolated install/import smoke test
+        shell: python {0}
+        run: |
+          import os
+          from pathlib import Path
+          wheels = list(Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, found: {wheels}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"TRAMURI_WHEEL={wheels[0].resolve()}\n")
+      - run: uv run --locked --no-sync pytest tests/python/test_install.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tramuri-wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          enable-cache: true
+      - run: uv sync --locked --no-install-project --python 3.11
+      - run: uv run --no-sync maturin sdist --manifest-path bindings/python/Cargo.toml --out dist
+      - name: Verify source distribution contents
+        shell: python {0}
+        run: |
+          import subprocess
+          import tarfile
+          from pathlib import Path
+          archives = list(Path("dist").glob("*.tar.gz"))
+          if len(archives) != 1:
+              raise SystemExit(f"expected exactly one sdist, found: {archives}")
+          with tarfile.open(archives[0], "r:gz") as archive:
+              names = archive.getnames()
+          required = (
+              "Cargo.toml",
+              "Cargo.lock",
+              "pyproject.toml",
+              "LICENSE",
+              "bindings/python/Cargo.toml",
+              "crates/tramuri-core/src/discovery.rs",
+              "crates/tramuri-core/src/hash_status.rs",
+              "python/tramuri/__init__.py",
+              "python/tramuri/py.typed",
+          )
+          missing = [path for path in required if not any(name.endswith(path) for name in names)]
+          if missing:
+              raise SystemExit(f"sdist is missing required files: {missing}")
+          destination = Path("target/sdist-check")
+          destination.mkdir(parents=True, exist_ok=True)
+          subprocess.run(["tar", "-xzf", str(archives[0]), "-C", str(destination)], check=True)
+          source_root = destination / archives[0].name.removesuffix(".tar.gz")
+          subprocess.run(
+              [
+                  "cargo",
+                  "metadata",
+                  "--no-deps",
+                  "--format-version",
+                  "1",
+                  "--manifest-path",
+                  str(source_root / "bindings/python/Cargo.toml"),
+              ],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tramuri-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error

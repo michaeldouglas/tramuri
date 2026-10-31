@@ -4,7 +4,11 @@ use clap::{Parser, Subcommand};
 use tramuri_core::{init, scan};
 
 #[derive(Debug, Parser)]
-#[command(name = "tramuri", version, about = "Local-first project knowledge infrastructure")]
+#[command(
+    name = "tramuri",
+    version,
+    about = "Local-first project knowledge infrastructure"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -58,7 +62,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     "Scanned {} files in {} ({})",
                     report.files.len(),
                     report.project_root,
-                    if report.complete { "complete" } else { "partial" }
+                    if report.complete {
+                        "complete"
+                    } else {
+                        "partial"
+                    }
                 );
                 println!(
                     "Added: {}, changed: {}, unchanged: {}, unverified: {}, deleted: {}, sensitive excluded: {}",

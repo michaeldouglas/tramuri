@@ -24,7 +24,11 @@ fn init_and_scan_emit_machine_readable_json() {
     fs::write(project.path().join("hello.txt"), "hello\n").expect("fixture should be written");
 
     let init = tramuri()
-        .args(["init", project.path().to_str().expect("path should be UTF-8"), "--json"])
+        .args([
+            "init",
+            project.path().to_str().expect("path should be UTF-8"),
+            "--json",
+        ])
         .output()
         .expect("CLI should launch");
     assert!(init.status.success());
@@ -32,8 +36,25 @@ fn init_and_scan_emit_machine_readable_json() {
     assert_eq!(init_json["schema_version"], 1);
     assert_eq!(init_json["already_initialized"], false);
 
+    let repeated_init = tramuri()
+        .args([
+            "init",
+            project.path().to_str().expect("path should be UTF-8"),
+            "--json",
+        ])
+        .output()
+        .expect("CLI should launch");
+    assert!(repeated_init.status.success());
+    let repeated_init_json: Value =
+        serde_json::from_slice(&repeated_init.stdout).expect("repeated init should emit JSON");
+    assert_eq!(repeated_init_json["already_initialized"], true);
+
     let scan = tramuri()
-        .args(["scan", project.path().to_str().expect("path should be UTF-8"), "--json"])
+        .args([
+            "scan",
+            project.path().to_str().expect("path should be UTF-8"),
+            "--json",
+        ])
         .output()
         .expect("CLI should launch");
     assert!(scan.status.success());
@@ -42,13 +63,37 @@ fn init_and_scan_emit_machine_readable_json() {
     assert_eq!(scan_json["complete"], true);
     assert_eq!(scan_json["files"][0]["path"], "hello.txt");
     assert_eq!(scan_json["added"][0], "hello.txt");
+
+    let repeated_scan = tramuri()
+        .args([
+            "scan",
+            project.path().to_str().expect("path should be UTF-8"),
+            "--json",
+        ])
+        .output()
+        .expect("CLI should launch");
+    assert!(repeated_scan.status.success());
+    let repeated_scan_json: Value =
+        serde_json::from_slice(&repeated_scan.stdout).expect("repeated scan should emit JSON");
+    assert_eq!(
+        repeated_scan_json["added"]
+            .as_array()
+            .expect("added should be an array")
+            .len(),
+        0
+    );
+    assert_eq!(repeated_scan_json["unchanged"][0], "hello.txt");
 }
 
 #[test]
 fn operational_error_is_nonzero_and_written_to_stderr() {
     let project = tempdir().expect("project directory should be created");
     let output = tramuri()
-        .args(["scan", project.path().to_str().expect("path should be UTF-8"), "--json"])
+        .args([
+            "scan",
+            project.path().to_str().expect("path should be UTF-8"),
+            "--json",
+        ])
         .output()
         .expect("CLI should launch");
 

@@ -6,14 +6,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
-use ignore::{DirEntry, WalkBuilder};
+use ignore::{DirEntry, Error as IgnoreError, WalkBuilder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::storage::{
     StoredFile, database_path, initialize_database, load_inventory, open_database, persist_scan,
 };
-use crate::{Result, TramuriError, SCHEMA_VERSION};
+use crate::{HashStatus, Result, SCHEMA_VERSION, TramuriError};
 
 const MAX_HASH_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -23,25 +23,6 @@ pub struct InitReport {
     pub database_path: String,
     pub schema_version: u32,
     pub already_initialized: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum HashStatus {
-    Hashed,
-    TooLarge,
-    ReadError,
-}
-
-impl HashStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Hashed => "hashed",
-            Self::TooLarge => "too_large",
-            Self::ReadError => "read_error",
-        }
-    }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -159,6 +140,21 @@ fn canonical_project_root(path: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+fn walk_error_path(error: &IgnoreError) -> Option<&Path> {
+    match error {
+        IgnoreError::Partial(errors) => errors.iter().find_map(walk_error_path),
+        IgnoreError::WithPath { path, .. } => Some(path),
+        IgnoreError::WithLineNumber { err, .. } | IgnoreError::WithDepth { err, .. } => {
+            walk_error_path(err)
+        }
+        IgnoreError::Loop { child, .. } => Some(child),
+        IgnoreError::Io(_)
+        | IgnoreError::Glob { .. }
+        | IgnoreError::UnrecognizedFileType(_)
+        | IgnoreError::InvalidDefinition => None,
+    }
+}
+
 fn collect_files(root: &Path) -> WalkResult {
     let mut files = Vec::new();
     let mut warnings = Vec::new();
@@ -171,6 +167,7 @@ fn collect_files(root: &Path) -> WalkResult {
         .standard_filters(true)
         .hidden(false)
         .git_global(false)
+        .require_git(false)
         .parents(true)
         .filter_entry({
             let sensitive_entry_count = Arc::clone(&sensitive_entry_count);
@@ -184,8 +181,9 @@ fn collect_files(root: &Path) -> WalkResult {
                 complete = false;
                 warnings.push(ScanWarning {
                     code: "walk_error".to_owned(),
-                    path: error.path().and_then(|path| relative_path(root, path).ok()),
-                    message: "The directory entry could not be read; this scan is partial.".to_owned(),
+                    path: walk_error_path(&error).and_then(|path| relative_path(root, path).ok()),
+                    message: "The directory entry could not be read; this scan is partial."
+                        .to_owned(),
                 });
                 continue;
             }
@@ -196,7 +194,12 @@ fn collect_files(root: &Path) -> WalkResult {
         }
         let Some(file_type) = entry.file_type() else {
             complete = false;
-            warnings.push(warning_for(root, entry.path(), "metadata_error", "File type could not be determined."));
+            warnings.push(warning_for(
+                root,
+                entry.path(),
+                "metadata_error",
+                "File type could not be determined.",
+            ));
             continue;
         };
         if file_type.is_symlink() {
@@ -239,7 +242,11 @@ fn collect_files(root: &Path) -> WalkResult {
             }
             Err((code, message)) => {
                 complete = false;
-                warnings.push(ScanWarning { code, path: Some(relative), message });
+                warnings.push(ScanWarning {
+                    code,
+                    path: Some(relative.clone()),
+                    message,
+                });
                 // A placeholder keeps the current file visible in the report.
                 // Persistence deliberately retains the older row on read errors.
                 files.push(FileRecord {
@@ -304,10 +311,15 @@ fn is_sensitive_name(name: &str) -> bool {
         || name.starts_with("credentials.")
         || name.starts_with("secrets.")
         || matches!(
-            Path::new(&name).extension().and_then(|extension| extension.to_str()),
+            Path::new(&name)
+                .extension()
+                .and_then(|extension| extension.to_str()),
             Some("pem" | "key" | "p12" | "pfx" | "jks" | "kdbx")
         )
-        || matches!(name.as_str(), "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa")
+        || matches!(
+            name.as_str(),
+            "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa"
+        )
 }
 
 fn inventory_file(
@@ -343,13 +355,15 @@ fn inventory_file(
     let mut file = File::open(&canonical).map_err(|_| {
         (
             "read_error".to_owned(),
-            "File contents could not be opened for fingerprinting; this scan is partial.".to_owned(),
+            "File contents could not be opened for fingerprinting; this scan is partial."
+                .to_owned(),
         )
     })?;
     let opened_metadata = file.metadata().map_err(|_| {
         (
             "metadata_error".to_owned(),
-            "File metadata could not be read from the opened file; this scan is partial.".to_owned(),
+            "File metadata could not be read from the opened file; this scan is partial."
+                .to_owned(),
         )
     })?;
     let canonical_after_open = fs::canonicalize(path).map_err(|_| {
@@ -394,15 +408,24 @@ fn inventory_file(
         {
             return Err((
                 "changed_during_scan".to_owned(),
-                "The file changed while its metadata was being inventoried; this scan is partial.".to_owned(),
+                "The file changed while its metadata was being inventoried; this scan is partial."
+                    .to_owned(),
             ));
         }
         return Ok((
-            FileRecord { path: relative.clone(), size_bytes, modified_unix_ms, sha256: None, hash_status: HashStatus::TooLarge },
+            FileRecord {
+                path: relative.clone(),
+                size_bytes,
+                modified_unix_ms,
+                sha256: None,
+                hash_status: HashStatus::TooLarge,
+            },
             Some(ScanWarning {
                 code: "hash_size_limit".to_owned(),
                 path: Some(relative),
-                message: format!("File exceeds the {MAX_HASH_BYTES}-byte hash limit; metadata was inventoried without a content hash."),
+                message: format!(
+                    "File exceeds the {MAX_HASH_BYTES}-byte hash limit; metadata was inventoried without a content hash."
+                ),
             }),
         ));
     }
@@ -412,7 +435,8 @@ fn inventory_file(
             let final_metadata = file.metadata().map_err(|_| {
                 (
                     "metadata_error".to_owned(),
-                    "File metadata could not be rechecked after hashing; this scan is partial.".to_owned(),
+                    "File metadata could not be rechecked after hashing; this scan is partial."
+                        .to_owned(),
                 )
             })?;
             let final_path = fs::canonicalize(path).map_err(|_| {
@@ -439,16 +463,29 @@ fn inventory_file(
                 ));
             }
             Ok((
-                FileRecord { path: relative, size_bytes, modified_unix_ms, sha256: Some(sha256), hash_status: HashStatus::Hashed },
+                FileRecord {
+                    path: relative,
+                    size_bytes,
+                    modified_unix_ms,
+                    sha256: Some(sha256),
+                    hash_status: HashStatus::Hashed,
+                },
                 None,
             ))
         }
         Err(_) => Ok((
-            FileRecord { path: relative.clone(), size_bytes, modified_unix_ms, sha256: None, hash_status: HashStatus::ReadError },
+            FileRecord {
+                path: relative.clone(),
+                size_bytes,
+                modified_unix_ms,
+                sha256: None,
+                hash_status: HashStatus::ReadError,
+            },
             Some(ScanWarning {
                 code: "read_error".to_owned(),
                 path: Some(relative),
-                message: "File contents could not be read for hashing; this scan is partial.".to_owned(),
+                message: "File contents could not be read for hashing; this scan is partial."
+                    .to_owned(),
             }),
         )),
     }
@@ -471,7 +508,10 @@ fn hash_file(file: &mut File) -> std::io::Result<String> {
         remaining -= read as u64;
         hasher.update(&buffer[..read]);
         if remaining == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file grew beyond hash limit"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "file grew beyond hash limit",
+            ));
         }
     }
     Ok(hex::encode(hasher.finalize()))
@@ -484,13 +524,14 @@ enum FileComparison {
 }
 
 fn compare_file(previous: &StoredFile, current: &FileRecord) -> FileComparison {
-    if current.hash_status == HashStatus::ReadError || previous.hash_status == "read_error" {
+    if current.hash_status == HashStatus::ReadError || previous.hash_status == HashStatus::ReadError
+    {
         return FileComparison::Unverified;
     }
-    if current.hash_status == HashStatus::TooLarge || previous.hash_status == "too_large" {
+    if current.hash_status == HashStatus::TooLarge || previous.hash_status == HashStatus::TooLarge {
         if previous.size_bytes != current.size_bytes
             || previous.modified_unix_ms != current.modified_unix_ms
-            || previous.hash_status != current.hash_status.as_str()
+            || previous.hash_status != current.hash_status
         {
             return FileComparison::Changed;
         }
@@ -504,13 +545,13 @@ fn compare_file(previous: &StoredFile, current: &FileRecord) -> FileComparison {
         (None, None)
             if previous.size_bytes == current.size_bytes
                 && previous.modified_unix_ms == current.modified_unix_ms
-                && previous.hash_status == current.hash_status.as_str() =>
+                && previous.hash_status == current.hash_status =>
         {
             FileComparison::Unchanged
         }
         _ if previous.size_bytes != current.size_bytes
             || previous.modified_unix_ms != current.modified_unix_ms
-            || previous.hash_status != current.hash_status.as_str() =>
+            || previous.hash_status != current.hash_status =>
         {
             FileComparison::Changed
         }
@@ -524,16 +565,21 @@ fn to_stored(record: &FileRecord) -> StoredFile {
         size_bytes: record.size_bytes,
         modified_unix_ms: record.modified_unix_ms,
         sha256: record.sha256.clone(),
-        hash_status: record.hash_status.as_str().to_owned(),
+        hash_status: record.hash_status.clone(),
     }
 }
 
 fn relative_path(root: &Path, path: &Path) -> std::result::Result<String, TramuriError> {
-    let relative = path.strip_prefix(root).map_err(|_| TramuriError::NonUtf8Path(path.to_path_buf()))?;
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| TramuriError::NonUtf8Path(path.to_path_buf()))?;
     let mut components = Vec::new();
     for component in relative.components() {
         match component {
-            Component::Normal(part) => components.push(part.to_str().ok_or_else(|| TramuriError::NonUtf8Path(path.to_path_buf()))?),
+            Component::Normal(part) => components.push(
+                part.to_str()
+                    .ok_or_else(|| TramuriError::NonUtf8Path(path.to_path_buf()))?,
+            ),
             Component::CurDir => {}
             _ => return Err(TramuriError::NonUtf8Path(path.to_path_buf())),
         }
@@ -598,18 +644,28 @@ mod tests {
     #[test]
     fn scan_honors_gitignore_and_secret_denylists() {
         let temp = initialized_project();
-        fs::write(temp.path().join(".gitignore"), "ignored.txt\nsecret-dir/\n").expect("ignore file should be written");
-        fs::write(temp.path().join("ignored.txt"), "ignored").expect("ignored file should be written");
-        fs::write(temp.path().join("visible.txt"), "visible").expect("visible file should be written");
-        fs::write(temp.path().join(".env"), "SECRET=not persisted").expect("secret file should be written");
-        fs::write(temp.path().join("service.pem"), "private key").expect("key file should be written");
+        fs::write(temp.path().join(".gitignore"), "ignored.txt\nsecret-dir/\n")
+            .expect("ignore file should be written");
+        fs::write(temp.path().join("ignored.txt"), "ignored")
+            .expect("ignored file should be written");
+        fs::write(temp.path().join("visible.txt"), "visible")
+            .expect("visible file should be written");
+        fs::write(temp.path().join(".env"), "SECRET=not persisted")
+            .expect("secret file should be written");
+        fs::write(temp.path().join("service.pem"), "private key")
+            .expect("key file should be written");
         fs::create_dir(temp.path().join("secret-dir")).expect("directory should be created");
-        fs::write(temp.path().join("secret-dir/token.txt"), "token").expect("nested secret should be written");
+        fs::write(temp.path().join("secret-dir/token.txt"), "token")
+            .expect("nested secret should be written");
 
         let report = scan(temp.path()).expect("project should scan");
-        let paths = report.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>();
+        let paths = report
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(paths, [".gitignore", "visible.txt"]);
-        assert_eq!(report.sensitive_entries_excluded, 3);
+        assert_eq!(report.sensitive_entries_excluded, 2);
         assert!(!paths.iter().any(|path| path.contains("secret")));
     }
 
@@ -621,7 +677,11 @@ mod tests {
         fs::write(temp.path().join("alpha.txt"), "a").expect("file should be written");
 
         let report = scan(temp.path()).expect("project should scan");
-        let paths = report.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>();
+        let paths = report
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(paths, ["alpha.txt", "café.txt", "zeta.txt"]);
     }
 
@@ -653,7 +713,8 @@ mod tests {
         let temp = initialized_project();
         let path = temp.path().join("large.bin");
         let file = File::create(&path).expect("large file should be created");
-        file.set_len(MAX_HASH_BYTES + 1).expect("file should be sparse-expanded");
+        file.set_len(MAX_HASH_BYTES + 1)
+            .expect("file should be sparse-expanded");
 
         let report = scan(temp.path()).expect("large file should be inventoried");
         assert!(report.complete);
@@ -673,13 +734,24 @@ mod tests {
         use std::os::unix::fs::symlink;
         let temp = initialized_project();
         let outside = TempDir::new().expect("outside directory should be created");
-        fs::write(outside.path().join("outside.txt"), "outside").expect("outside file should be written");
+        fs::write(outside.path().join("outside.txt"), "outside")
+            .expect("outside file should be written");
         symlink(outside.path(), temp.path().join("linked-dir")).expect("symlink should be created");
 
         let report = scan(temp.path()).expect("project should scan partially");
         assert!(!report.complete);
-        assert!(report.files.iter().all(|file| file.path != "linked-dir/outside.txt"));
-        assert!(report.warnings.iter().any(|warning| warning.code == "symlink_skipped"));
+        assert!(
+            report
+                .files
+                .iter()
+                .all(|file| file.path != "linked-dir/outside.txt")
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "symlink_skipped")
+        );
     }
 
     #[cfg(windows)]
@@ -687,7 +759,8 @@ mod tests {
     fn symlink_makes_scan_partial_and_does_not_follow_target() {
         let temp = initialized_project();
         let outside = TempDir::new().expect("outside directory should be created");
-        fs::write(outside.path().join("outside.txt"), "outside").expect("outside file should be written");
+        fs::write(outside.path().join("outside.txt"), "outside")
+            .expect("outside file should be written");
         let link = temp.path().join("linked-file.txt");
         if create_symlink_file(outside.path().join("outside.txt"), &link).is_err() {
             // Windows CI may not grant symlink privileges; this environmental case is unsupported.
@@ -696,8 +769,18 @@ mod tests {
 
         let report = scan(temp.path()).expect("project should scan partially");
         assert!(!report.complete);
-        assert!(!report.files.iter().any(|file| file.path == "linked-file.txt"));
-        assert!(report.warnings.iter().any(|warning| warning.code == "symlink_skipped"));
+        assert!(
+            !report
+                .files
+                .iter()
+                .any(|file| file.path == "linked-file.txt")
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "symlink_skipped")
+        );
     }
 
     #[cfg(unix)]
@@ -710,8 +793,11 @@ mod tests {
 
         // A dangling symlink causes an explicit partial scan.
         use std::os::unix::fs::symlink;
-        symlink(temp.path().join("missing-target"), temp.path().join("dangling-link"))
-            .expect("dangling link should be created");
+        symlink(
+            temp.path().join("missing-target"),
+            temp.path().join("dangling-link"),
+        )
+        .expect("dangling link should be created");
         let report = scan(temp.path()).expect("partial scan should return a report");
         assert!(!report.complete);
         assert!(report.deleted.is_empty());
@@ -732,15 +818,26 @@ mod tests {
         use std::os::unix::fs::symlink;
         let temp = TempDir::new().expect("temporary directory should be created");
         let outside = TempDir::new().expect("outside directory should be created");
-        symlink(outside.path(), temp.path().join(".tramuri")).expect("state directory link should be created");
-        assert!(matches!(init(temp.path()), Err(TramuriError::InvalidStatePath(_))));
+        symlink(outside.path(), temp.path().join(".tramuri"))
+            .expect("state directory link should be created");
+        assert!(matches!(
+            init(temp.path()),
+            Err(TramuriError::InvalidStatePath(_))
+        ));
 
         let other = TempDir::new().expect("second project should be created");
         fs::create_dir(other.path().join(".tramuri")).expect("state directory should be created");
-        fs::write(outside.path().join("other.sqlite3"), "not a database").expect("outside file should be created");
-        symlink(outside.path().join("other.sqlite3"), other.path().join(".tramuri/tramuri.sqlite3"))
-            .expect("database link should be created");
-        assert!(matches!(init(other.path()), Err(TramuriError::InvalidStatePath(_))));
+        fs::write(outside.path().join("other.sqlite3"), "not a database")
+            .expect("outside file should be created");
+        symlink(
+            outside.path().join("other.sqlite3"),
+            other.path().join(".tramuri/tramuri.sqlite3"),
+        )
+        .expect("database link should be created");
+        assert!(matches!(
+            init(other.path()),
+            Err(TramuriError::InvalidStatePath(_))
+        ));
     }
 
     #[test]
